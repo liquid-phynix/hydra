@@ -3,33 +3,38 @@
 import bluelet, time
 from multiprocessing import Process, Pipe
 
-_old_bluelet_null = bluelet.null
-def _new_bluelet_null(*args, **kwargs):
-    time.sleep(0.01)
-    yield _old_bluelet_null()
-bluelet.null = _new_bluelet_null
-
+bluelet.null = (lambda f: lambda: (time.sleep(0.005), (yield f())))(bluelet.null)
+ 
 usage = \
 """usage: %s --profile=<profile>
 where <profile> corresponds to ~/.ipython/profile_<profile>"""
 
 # decorator
-def gfun(method):
+def toplevel(method):
     def _method(*args, **kwargs):
         method(_hq, *args, **kwargs)
     globals()[method.__name__] = _method
     return method
 
+# class Proxy:
+#     def __init__(self, method, *args):
+#         self.method = method
+#         self.args = args
+#     def __call__(self, obj):
+#         self.method(obj, *self.args)
+
 class Msg:
     def __init__(self, msg):
         self.msg = msg
 class Ready(Msg): pass
-class Command: pass
-class Exit(Command): pass
-class ListEngines(Command): pass
-class Start(Command): pass
+
+# class Command: pass
+# class Exit(Command): pass
+# class ListEngines(Command): pass
+# class Start(Command): pass
 
 class Manager:
+    
     def __init__(self, pipe, profile):
         from IPython.parallel import Client
         self.pipe = pipe
@@ -45,24 +50,29 @@ class Manager:
         self.pipe.send(Ready('all systems are a go'))
         for engine in self.engines:
             yield bluelet.spawn(self.process_job(engine))
+        print('th1: Manager <> %s' % str(Manager.list_engines))
         while self.run:
             if not self.pipe.poll():
                 yield bluelet.null()
             else:
-                msg = self.pipe.recv()
-                if isinstance(msg, Exit):
-                    self.run = False
-                elif isinstance(msg, ListEngines):
-                    self.pipe.send(str(self.engines))
-
-        self.stop_monitor()
+                command = self.pipe.recv()
+                Manager.__dict__[command](self)
         yield bluelet.end()
+
     def bluelet(self):
         bluelet.run(self.app())
+        
     def stop_monitor(self):
+        self.run = False
         for i, engine in enumerate(self.engines):
             engine.apply_sync(Manager.transmit_output, 'exit')
             print('app::stop_monitor::stopped<%d>' % i)
+
+    def list_engines(self):
+        self.pipe.send(str(self.engines))
+
+    def start_sched(self):
+        pass
         
     def process_job(self, engine):
         while self.run:
@@ -91,6 +101,7 @@ class Manager:
             raise ValueError('Wrong command <%s>' % command)
 
 class HQ:
+    
     def __init__(self, profile):
         print('using profile <%s>' % profile)
         self.pipe, pipe_bck = Pipe()
@@ -98,26 +109,30 @@ class HQ:
             Manager(pipe_bck, profile).bluelet()
         self.thread_bck = Process(target = bck)
         self.thread_bck.start()
+        
     def ready(self):
         while True:
             msg = self.pipe.recv()
             print(msg.msg)
             if isinstance(msg, Ready):
                 break
-    @gfun
+            
+    @toplevel
     def stop_monitor(self):
         if self.thread_bck.is_alive():
-            self.pipe.send(Exit())
+            self.pipe.send('stop_monitor')
             self.thread_bck.join()
-    @gfun
+            
+    @toplevel
     def list_engines(self):
         if self.thread_bck.is_alive():
-            self.pipe.send(ListEngines())
+            self.pipe.send('list_engines')
             print(self.pipe.recv())
-    @gfun
+            
+    @toplevel
     def start_sched(self):
         if self.thread_bck.is_alive():
-            self.pipe.send(Start())
+            self.pipe.send('start_scheduling')
 
 def main():
     import sys
@@ -135,6 +150,7 @@ def main():
     _hq.ready()
 
 if __name__ == '__main__':
+    print('th2: Manager <> %s' % str(Manager.list_engines))
     main()
     from IPython.config.loader import Config
     from IPython import embed
