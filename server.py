@@ -135,12 +135,18 @@ class BCK:
     def schedule_job(self):
         unlucky = self.engines_idle.pop()
         self.engines_executing.append(unlucky)
-        lucky = self.jobs_idle.pop()
+        _,lucky = self.jobs_idle.popitem()
         lucky.set_executing(self.list_manager.list())
-        self.jobs_executing.append(lucky)        
+
+        #        print('schedule_job')
+        #        print(type(lucky.output_queue))
+        self.jobs_executing[lucky.id] = lucky
+        #        print(type(self.jobs_executing[-1].output_queue))
+        
         yield bluelet.call(unlucky.start_job(lucky))
-        self.jobs_executing.remove(lucky)
-        self.jobs_finished.append(lucky)
+        
+        del self.jobs_executing[lucky.id]
+        self.jobs_finished[lucky.id] = lucky
         unlucky.executing_job = None
         self.engines_executing.remove(unlucky)
         self.engines_idle.append(unlucky)
@@ -175,6 +181,9 @@ class BCK:
         self.run_scheduling = False
         self.pipe.send('stop_scheduling')
     def status_report(self, ack = True):
+        # if len(self.jobs_executing) > 0:
+        #     print('BCK')
+        #     print(type(self.jobs_executing[0].output_queue))
         print('%d executing job(s)' % len(self.jobs_executing))
         print('%d finished job(s)' % len(self.jobs_finished))
         print('%d idle job(s)' % len(self.jobs_idle))
@@ -213,9 +222,9 @@ class HQ:
         print('using profile: %s' % profile)
         self.pipe, pipe_bck = Pipe()
         list_manager = Manager()
-        self.jobs_idle = list_manager.list()
-        self.jobs_executing = list_manager.list()
-        self.jobs_finished = list_manager.list()
+        self.jobs_idle = list_manager.dict()
+        self.jobs_executing = list_manager.dict()
+        self.jobs_finished = list_manager.dict()
         self.thread_bck = Process(target = lambda:
                                   BCK(pipe_bck, profile, list_manager,
                                       self.jobs_idle,
@@ -247,6 +256,18 @@ class HQ:
         if self.pipe.recv() != 'start_scheduling':
             raise ValueError('response - query kind differs')
     @toplevel_and_alive
+    def list_jobs(self):
+        pr = '''
+--- executing ---
+%s
+--- idle      ---
+%s
+--- finished  ---
+%s''' % ('\n'.join('job <%d> => %s' % (k, str(v)) for k, v in self.jobs_executing.items()),
+         '\n'.join('job <%d> => %s' % (k, str(v)) for k, v in self.jobs_idle.items()),
+         '\n'.join('job <%d> => %s' % (k, str(v)) for k, v in self.jobs_finished.items()),)
+        print(pr)
+    @toplevel_and_alive
     def stop_sched(self):
         self.pipe.send('stop_scheduling')
         if self.pipe.recv() != 'stop_scheduling':
@@ -255,10 +276,13 @@ class HQ:
     def add_job(self, jobs):
         if isinstance(jobs, Jobs):
             for job in jobs.apart():
-                self.jobs_idle.append(job)
+                self.jobs_idle[job.id] = job
         else: raise NotImplementedError('add_job only accepts \'Jobs\'')
     @toplevel_and_alive
     def status_report(self):
+        #        if len(self.jobs_executing) > 0:
+            #            print('HQ')
+            #            print(type(self.jobs_executing[0].output_queue))
         self.pipe.send('status_report')
         if self.pipe.recv() != 'status_report':
             raise ValueError('response - query kind differs')
@@ -268,18 +292,12 @@ class HQ:
         if self.pipe.recv() != 'shutdown_all':
             raise ValueError('response - query kind differs')
     @toplevel_and_alive
-    def follow_job(self, kind, index):
-        if kind == 'exec':
-            kind = self.jobs_executing
-        elif kind == 'fini':
-            kind = self.jobs_finished
-        else:
-            print('wrong kind of job')
-            return
-        if index >= len(kind):
-            print('job index oob')
-            return
-        pager.Pager(kind[index].output_queue).run()
+    def follow_job(self, id):
+        if id in self.jobs_executing:
+            pager.Pager(self.jobs_executing[id].output_queue).run()
+        elif id in self.jobs_finished:
+            pager.Pager(self.jobs_finished[id].output_queue).run()
+        else: print('job id not found')
 # END LOCAL
 ################################################################################
 

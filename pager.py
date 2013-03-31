@@ -13,15 +13,15 @@ def exit_on_q(input):
 
 class Walker(urwid.ListWalker):
     def __init__(self, lines):
-        self.focus, self.lines, self.layout = 0, lines, Layout()
+        self.focus, self.lines = 0, lines
+        #        self.focus, self.lines, self.layout = 0, lines, Layout()
     def _get_at_pos(self, pos):
-        #        print('pos %d' % pos)
-        #        return urwid.Text('', layout = self.layout), pos
         if pos < 0 or pos >= len(self.lines):
-            return urwid.Text('', layout = self.layout), pos
-        else:
-            # print('%d of %d' % (pos, len(self.lines)))
-            return urwid.Text(self.lines[pos], layout = self.layout), pos
+            return None, None
+        #            return urwid.Text(''), pos
+        #            return urwid.Text('', layout = self.layout), pos
+        #        else: return urwid.Text(self.lines[pos], layout = self.layout), pos
+        else: return urwid.Text(self.lines[pos]), pos
     def get_focus(self): 
         return self._get_at_pos(self.focus)
     def set_focus(self, focus):
@@ -32,13 +32,13 @@ class Walker(urwid.ListWalker):
     def get_prev(self, start_pos):
         return self._get_at_pos(start_pos - 1)
 
-class Layout(urwid.TextLayout):
-    # def descend(self, line_start, text_len, width):
-    #     return [[(width, line_start, line_start + width)]] if text_len <= width else [[(width - 1, line_start, line_start + width - 1), (1, width - 1, '-')]] + self.descend(line_start + width - 1, text_len - width + 1, width)
-    def descend(self, line_start, text_len, width):
-        return [[(width, line_start, line_start + width)]] + ([] if text_len <= width else self.descend(line_start + width, text_len - width, width))
-    def layout(self, text, width, align, wrap):
-        return self.descend(0, len(text), width)
+# class Layout(urwid.TextLayout):
+#     # def descend(self, line_start, text_len, width):
+#     #     return [[(width, line_start, line_start + width)]] if text_len <= width else [[(width - 1, line_start, line_start + width - 1), (1, width - 1, '-')]] + self.descend(line_start + width - 1, text_len - width + 1, width)
+#     def descend(self, line_start, text_len, width):
+#         return [[(width, line_start, line_start + width)]] + ([] if text_len <= width else self.descend(line_start + width, text_len - width, width))
+#     def layout(self, text, width, align, wrap):
+#         return self.descend(0, len(text), width)
 
 class Pager(urwid.MainLoop):
     def __init__(self, lines):
