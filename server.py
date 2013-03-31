@@ -1,6 +1,6 @@
 #!/usr/bin/python
 
-import bluelet, sys, time, itertools, functools
+import bluelet, sys, time, itertools, functools, pager
 from multiprocessing import Process, Pipe, Manager
 
 from numpy import random
@@ -94,7 +94,7 @@ class Engine:
             while not async.ready():
                 yield bluelet.null()
             poll_code, stdout_line = async.result
-            self.executing_job.output_queue.append(stdout_line)
+            self.executing_job.output_queue.append(stdout_line.strip().decode())
             if poll_code is not None:
                 self.executing_job.unset_executing()
                 break
@@ -136,8 +136,8 @@ class BCK:
         unlucky = self.engines_idle.pop()
         self.engines_executing.append(unlucky)
         lucky = self.jobs_idle.pop()
-        self.jobs_executing.append(lucky)
         lucky.set_executing(self.list_manager.list())
+        self.jobs_executing.append(lucky)        
         yield bluelet.call(unlucky.start_job(lucky))
         self.jobs_executing.remove(lucky)
         self.jobs_finished.append(lucky)
@@ -175,7 +175,7 @@ class BCK:
         self.run_scheduling = False
         self.pipe.send('stop_scheduling')
     def status_report(self, ack = True):
-        print('%d executing job(s)' % sum(engine.executing_job is not None for engine in self.engines_executing))
+        print('%d executing job(s)' % len(self.jobs_executing))
         print('%d finished job(s)' % len(self.jobs_finished))
         print('%d idle job(s)' % len(self.jobs_idle))
         if ack: self.pipe.send('status_report')
@@ -267,6 +267,19 @@ class HQ:
         self.pipe.send('shutdown_all')
         if self.pipe.recv() != 'shutdown_all':
             raise ValueError('response - query kind differs')
+    @toplevel_and_alive
+    def follow_job(self, kind, index):
+        if kind == 'exec':
+            kind = self.jobs_executing
+        elif kind == 'fini':
+            kind = self.jobs_finished
+        else:
+            print('wrong kind of job')
+            return
+        if index >= len(kind):
+            print('job index oob')
+            return
+        pager.Pager(kind[index].output_queue).run()
 # END LOCAL
 ################################################################################
 
