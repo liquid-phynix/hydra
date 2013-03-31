@@ -40,6 +40,8 @@ class Job:
     """represents a fully parameterized single job"""
     def __init__(self, command, working_dir, unique_dir):
         self.command, self.working_dir, self.unique_dir = command, working_dir, unique_dir
+    def __repr__(self):
+        return '< remote command: %s >' % self.command
     
 class Jobs:
     """represents multiple jobs with common properties"""
@@ -48,9 +50,12 @@ class Jobs:
         Jobs('/path/to/executable p1 p2', working_dir = ...)
         Jobs(Fmt(...), working_dir = ...)
         """
+        if not isinstance(jobs, list): jobs = [jobs]
         self.jobs, self.working_dir, self.unique_dir = jobs, working_dir, unique_dir
     def apart(self):
         return [Job(job, self.working_dir, self.unique_dir) for job in self.jobs]
+    def __repr__(self):
+        return '< %d jobs of\n%s >' % (len(self.jobs), self.jobs)
 
 class Engine:
     def __init__(self, view_of_one):
@@ -68,12 +73,15 @@ class Engine:
         return self.view_of_one.apply_sync(f, *args, **kwargs)
     def __repr__(self):
         return '<%s : %d>' % (self.hostname, self.id)
+    def start_job(self, executing_job):
+        self.executing_job = executing_job
+        self.apply(BCK.start_job, executing_job.command)
         
 class Msg:
     def __init__(self, msg):
         self.msg = msg
 class Ready(Msg): pass
-    
+
 class BCK:
     def __init__(self, pipe, profile, jobs_idle, jobs_finished):
         from IPython.parallel import Client
@@ -95,15 +103,26 @@ class BCK:
         self.pipe.send(Ready('all systems are a go'))
          # for engine in self.engines:
         #     yield bluelet.spawn(self.process_job(engine))
+        yield bluelet.spawn(self.check_finished_jobs())
         while self.run:
             if not self.pipe.poll():
                 yield bluelet.null()
+                if self.run_scheduling:
+                    # do the scheduling
+                    if len(self.engines_idle) > 0 and len(self.jobs_idle) > 0:
+                        self.schedule_job()
             else:
                 command = self.pipe.recv()
                 BCK.__dict__[command](self)
         yield bluelet.end()
     def bluelet(self):
         bluelet.run(self.app())
+    def schedule_job(self):
+        unlucky = self.engines_idle.pop()
+        lucky = self.jobs_idle.pop()
+        self.engines_executing.append(unlucky)
+        unlucky.start_job(lucky)
+        #        print('starting %s on %s' % (lucky, unlucky))
     def stop_monitor(self):
         self.run = False
         for engine in self.engines_executing:
@@ -118,10 +137,26 @@ class BCK:
 %s''' % ('\n'.join(map(str,self.engines_executing)), '\n'.join(map(str, self.engines_idle)))
         print(pr)
         self.pipe.send('list_engines')
+    def check_finished_jobs(self):
+        while self.run:
+            for engine in self.engines_executing:
+                retcode = engine.apply(BCK.poll_job)
+                if  retcode is not None:
+                    print('\njob %s finished on engine %s' % (engine.executing_job, engine))
+                    self.jobs_finished.append(engine.executing_job)
+                    engine.executing_job = None
+                    self.engines_executing.remove(engine)
+                    self.engines_idle.append(engine)
+                    break
+            yield bluelet.null()
     def start_scheduling(self):
-        print('idle jobs: %d' % len(self.jobs_idle))
+        self.status_report(ack = False)
         self.run_scheduling = True
         self.pipe.send('start_scheduling')
+    def stop_scheduling(self):
+        self.status_report(ack = False)
+        self.run_scheduling = False
+        self.pipe.send('stop_scheduling')
     def process_job(self, engine):
         while self.run:
             ar = engine.apply(BCK.remote_command, 'relay_stdout')
@@ -129,14 +164,24 @@ class BCK:
                 yield bluelet.null()
                 #            self.pipe.send(Msg(ar.result))
         yield bluelet.end()
+    def status_report(self, ack = True):
+        print('%d executing job(s)' % sum(engine.executing_job is not None for engine in self.engines_executing))
+        print('%d finished job(s)' % len(self.jobs_finished))
+        print('%d idle job(s)' % len(self.jobs_idle))
+        if ack: self.pipe.send('status_report')
+        
 ################################################################################
 # REMOTE
     @staticmethod
-    def start_job(num):
+    def start_job(command):
         from subprocess import Popen, PIPE
         global job
-        job = Popen(['/home/mcstar/src/sched/lilscript.sh', str(num)], stdout = PIPE)
-        return 'OK: %d' % num
+        job = Popen(command.split(' '), stdout = PIPE)
+    @staticmethod
+    def poll_job(*params):
+        global job
+        print('poll %s' % job.poll())
+        return job.poll()
     @staticmethod
     def remote_command(command):
         global job
@@ -190,6 +235,25 @@ class HQ:
     def start_sched(self):
         self.pipe.send('start_scheduling')
         if self.pipe.recv() != 'start_scheduling':
+            raise ValueError('response - query kind differs')
+    @toplevel_and_alive
+    def stop_sched(self):
+        self.pipe.send('stop_scheduling')
+        if self.pipe.recv() != 'stop_scheduling':
+            raise ValueError('response - query kind differs')
+    @toplevel_and_alive
+    def add_job(self, jobs):
+        if isinstance(jobs, Jobs):
+            for job in jobs.apart():
+                self.jobs_idle.append(job)
+        elif isinstance(job, Job):
+            self.jobs_idle.append(job)            
+        else:
+            raise NotImplementedError('only Jobs is implemented yet')
+    @toplevel_and_alive
+    def status_report(self):
+        self.pipe.send('status_report')
+        if self.pipe.recv() != 'status_report':
             raise ValueError('response - query kind differs')
 # END LOCAL
 ################################################################################
