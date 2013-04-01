@@ -41,11 +41,11 @@ class Job:
     id = 1 # instance counter for comparison purposes
     def __eq__(self, other):
         return self.id == other.id
-    def __init__(self, command, queue, working_dir = '.', unique_dir = False):
+    def __init__(self, command, working_dir = '.', unique_dir = False):
         self.id, Job.id = Job.id, Job.id + 1
         self.command, self.working_dir, self.unique_dir = command, working_dir, unique_dir
         self.is_executing = False
-        self.output_queue = queue
+        self.output_queue = None
     def __repr__(self):
         return '<remote command: %s>' % self.command
     def set_executing(self, managed_list):
@@ -63,8 +63,8 @@ class Jobs:
         Jobs(Fmt(...), working_dir = ...)"""
         if not isinstance(jobs, list): jobs = [jobs]
         self.jobs, self.working_dir, self.unique_dir = jobs, working_dir, unique_dir
-    def apart(self, manager):
-        return [Job(job, manager.list(), self.working_dir, self.unique_dir) for job in self.jobs]
+    def apart(self):
+        return [Job(job, self.working_dir, self.unique_dir) for job in self.jobs]
     def __repr__(self):
         return '< %d jobs of\n%s >' % (len(self.jobs), self.jobs)
 
@@ -135,39 +135,20 @@ class BCK:
     def schedule_job(self):
         unlucky = self.engines_idle.pop()
         self.engines_executing.append(unlucky)
-
-        print('for')
-        for _,j in self.jobs_idle.items():
-            print(type(j.output_queue))
-        print('end for')
-
-        
         _,lucky = self.jobs_idle.popitem()
-
-                    
-        print('schedule_job')
-        print(type(lucky.output_queue))
-        print(type(self.jobs_executing))
         self.jobs_executing[lucky.id] = lucky
-
-        print(type(self.jobs_executing[lucky.id].output_queue))
-        
-        yield bluelet.call(unlucky.start_job(lucky))
-        
+        yield bluelet.call(unlucky.start_job(lucky))        
         del self.jobs_executing[lucky.id]
         self.jobs_finished[lucky.id] = lucky
         unlucky.executing_job = None
         self.engines_executing.remove(unlucky)
         self.engines_idle.append(unlucky)
-        
         yield bluelet.end()
-        #        print('starting %s on %s' % (lucky, unlucky))
     def stop_monitor(self, ack = True):
         self.run = False
         for engine in self.engines_executing:
-            #            print('engine: %s stop' % engine)
             engine.apply(BCK.remote_command, 'stop_process')
-            print('app::stop_monitor::stopped<%d>' % engine.id)
+            print('%s stopped' % engine)
         if ack: self.pipe.send('stop_monitor')
     def shutdown_all(self):
         self.stop_monitor(ack = False)
@@ -177,7 +158,7 @@ class BCK:
         pr = '''
 --- executing ---
 %s
----   idle    ---
+--- idle      ---
 %s''' % ('\n'.join(map(str,self.engines_executing)), '\n'.join(map(str, self.engines_idle)))
         print(pr)
         self.pipe.send('list_engines')
@@ -206,7 +187,7 @@ class BCK:
     def remote_command(command):
         global job
         if job is None:
-            return
+            return 0, b''
         #            raise ValueError('\'job\' cannot be None')
         if command == 'stop_process':
             job.kill()
@@ -229,9 +210,10 @@ class HQ:
         print('using profile: %s' % profile)
         self.pipe, pipe_bck = Pipe()
         self.manager = Manager()
-        self.jobs_idle = self.manager.dict()
-        self.jobs_executing = self.manager.dict()
-        self.jobs_finished = self.manager.dict()
+        tmp_manager = Manager()
+        self.jobs_idle = tmp_manager.dict()
+        self.jobs_executing = tmp_manager.dict()
+        self.jobs_finished = tmp_manager.dict()
         self.thread_bck = Process(target = lambda:
                                   BCK(pipe_bck, profile,
                                       self.jobs_idle,
@@ -282,27 +264,12 @@ class HQ:
     @toplevel_and_alive
     def add_job(self, jobs):
         if isinstance(jobs, Jobs):
-            for job in jobs.apart(self.manager):
-                print('inside')
-                print(type(self.manager.list()))
-                print(type(job.output_queue))
+            for job in jobs.apart():
+                job.output_queue = self.manager.list()
                 self.jobs_idle[job.id] = job
-                print(type(self.jobs_idle[job.id]))
-                print(type(self.jobs_idle[job.id].output_queue))
         else: raise NotImplementedError('add_job only accepts \'Jobs\'')
-            
-        print('addjob for')
-        for _,j in self.jobs_idle.items():
-            print(type(j))
-            print(type(j.output_queue))
-        print('addjob end for')
-
-            
     @toplevel_and_alive
     def status_report(self):
-        #        if len(self.jobs_executing) > 0:
-            #            print('HQ')
-            #            print(type(self.jobs_executing[0].output_queue))
         self.pipe.send('status_report')
         if self.pipe.recv() != 'status_report':
             raise ValueError('response - query kind differs')
@@ -314,10 +281,6 @@ class HQ:
     @toplevel_and_alive
     def follow_job(self, id):
         if id in self.jobs_executing: 
-            print(type(self.jobs_executing))
-            print(type(self.jobs_executing[id]))
-            print(type(self.jobs_executing[id].output_queue))
-            raise ValueError
             pager.Pager(self.jobs_executing[id].output_queue).run()
         elif id in self.jobs_finished:
             pager.Pager(self.jobs_finished[id].output_queue).run()
@@ -422,3 +385,4 @@ if __name__ == '__main__':
 
 # print(type(dp[0].lp))
 # print(type(lp[0].lp))
+        
