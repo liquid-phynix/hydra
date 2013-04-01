@@ -1,6 +1,6 @@
 #!/usr/bin/python
 
-import bluelet, sys, time, itertools, functools, pager
+import bluelet, sys, time, itertools, functools, tempfile, pager, os
 from multiprocessing import Process, Pipe, Manager
 
 from numpy import random
@@ -34,7 +34,7 @@ class Fmt:
         self.saturation -= len(kwargs)
         return self.fmts if self.saturation == 0 else self
     def __repr__(self):
-        return '<\n' + ',\n'.join(self.fmts) + '\n>'
+        return '<\n' + ',\n'.join(self.fmts) + '\n>' 
 
 class Job:
     """represents a fully parameterized single job"""
@@ -45,12 +45,12 @@ class Job:
         self.id, Job.id = Job.id, Job.id + 1
         self.command, self.working_dir, self.unique_dir = command, working_dir, unique_dir
         self.is_executing = False
-        self.output_queue = None
+        self.output_queue = []
+        self.follow = False
     def __repr__(self):
         return '<remote command: %s>' % self.command
-    def set_executing(self, managed_list):
+    def set_executing(self):
         self.is_executing = True
-        self.output_queue = managed_list
     def unset_executing(self):
         self.is_executing = False
         #        self.output_queue = ['some', 'stuff'] #self.output_queue.copy()
@@ -69,12 +69,12 @@ class Jobs:
         return '< %d jobs of\n%s >' % (len(self.jobs), self.jobs)
 
 class Engine:
-    def __init__(self, view_of_one):
+    def __init__(self, view_of_one, jobs_executing):
         if len(view_of_one) != 1:
             raise NotImplementedError('Engine takes a one element view')
         self.view_of_one = view_of_one
         self.id = view_of_one.targets
-        self.executing_job = None
+        self.jobs_executing = jobs_executing
         self.hostname = self.apply(BCK.remote_system_command, 'hostname')
         def set_job_global():
             global job
@@ -86,17 +86,27 @@ class Engine:
         return self.view_of_one.apply_async(f, *args, **kwargs)
     def __repr__(self):
         return '<%s : %d>' % (self.hostname, self.id)
-    def start_job(self, executing_job):
-        self.executing_job = executing_job
-        self.apply(BCK.start_job, executing_job.command)
+    def start_job(self, job_id):
+        self.apply(BCK.start_job, self.jobs_executing[job_id].command)
         while True:
             async = self.apply_async(BCK.remote_command, 'relay_stdout')
             while not async.ready():
                 yield bluelet.null()
             poll_code, stdout_line = async.result
-            self.executing_job.output_queue.append(stdout_line.strip().decode())
+            job = self.jobs_executing[job_id]
+            #            print('engine: follow: %s, line received: %s' % (self.jobs_executing[job_id].follow, stdout_line))
+            job.output_queue.append(stdout_line.strip().decode())
+            #            print('from job: %s' % '>\n<'.join(self.executing_job.output_queue))
+            if job.follow and PIPE is not None:
+                PIPE.write(stdout_line)
+                PIPE.flush()
+                #                os.write(job.follow, b'adfaidohfusfhgdsaiuyhgfsduiyfs\n')
+                #                with open(job.follow, 'wb') as fd:
+                #                job.follow.write(stdout_line)
+                #                fd.flush()
+                #                print('written %s' % stdout_line)
             if poll_code is not None:
-                self.executing_job.unset_executing()
+                job.unset_executing()
                 break
         yield bluelet.end()
 
@@ -111,10 +121,12 @@ class BCK:
         self.jobs_idle, self.jobs_executing, self.jobs_finished = jobs_idle, jobs_executing, jobs_finished
         self.pipe, self.profile = pipe, profile
         self.client = Client(profile = profile)
-        self.engines_idle = [Engine(self.client[id]) for id in self.client.ids]
+        self.engines_idle = [Engine(self.client[id], jobs_executing) for id in self.client.ids]
         self.engines_executing = []
         self.run = True
         self.run_scheduling = False
+        global PIPE
+        PIPE = False
 
     def app(self):
         print('client: %d engines, with id\'s %s are up' % (len(self.client.ids), self.client.ids))       
@@ -130,14 +142,16 @@ class BCK:
                 if self.run_scheduling:
                     if len(self.engines_idle) > 0 and len(self.jobs_idle) > 0:
                         yield bluelet.spawn(self.schedule_job())
-            else: BCK.__dict__[self.pipe.recv()](self)
+            else:
+                recv = self.pipe.recv()
+                BCK.__dict__[recv[0]](self, *recv[1:])
         yield bluelet.end()
     def schedule_job(self):
         unlucky = self.engines_idle.pop()
         self.engines_executing.append(unlucky)
         _,lucky = self.jobs_idle.popitem()
         self.jobs_executing[lucky.id] = lucky
-        yield bluelet.call(unlucky.start_job(lucky))        
+        yield bluelet.call(unlucky.start_job(lucky.id))        
         del self.jobs_executing[lucky.id]
         self.jobs_finished[lucky.id] = lucky
         unlucky.executing_job = None
@@ -175,6 +189,35 @@ class BCK:
         print('%d finished job(s)' % len(self.jobs_finished))
         print('%d idle job(s)' % len(self.jobs_idle))
         if ack: self.pipe.send('status_report')
+    def follow(self, id, fifo):
+        job = None
+        if id in self.jobs_executing:
+            job = self.jobs_executing[id]
+            global PIPE
+            PIPE = open(fifo, 'wb')
+            job.follow = True
+            self.jobs_executing[id] = job
+            self.pipe.send('follow')
+        if id in self.jobs_finished:
+            job = self.jobs_finished[id]
+            print('job finished %s' % ('\-'.join(self.jobs_finished[id].output_queue)))
+            global PIPE
+            PIPE = open(fifo, 'wb')
+            self.pipe.send('follow')
+            for line in job.output_queue:
+                print(line)
+                PIPE.write(line + b'\n')
+            PIPE.flush()
+            #            PIPE.close()
+            print('content passed')
+        if job is None: raise ValueError('follow: \'job\' cannot be None')
+    def unfollow(self, id):
+        if id in self.jobs_executing:
+            job = self.jobs_executing[id]
+            job.follow = False
+            self.jobs_executing[id] = job
+            self.pipe.send('unfollow')
+        else: raise ValueError('unfollow: \'job\' cannot be None')
         
 ################################################################################
 # REMOTE
@@ -209,11 +252,10 @@ class HQ:
     def __init__(self, profile):
         print('using profile: %s' % profile)
         self.pipe, pipe_bck = Pipe()
-        self.manager = Manager()
-        tmp_manager = Manager()
-        self.jobs_idle = tmp_manager.dict()
-        self.jobs_executing = tmp_manager.dict()
-        self.jobs_finished = tmp_manager.dict()
+        manager = Manager()
+        self.jobs_idle = manager.dict()
+        self.jobs_executing = manager.dict()
+        self.jobs_finished = manager.dict()
         self.thread_bck = Process(target = lambda:
                                   BCK(pipe_bck, profile,
                                       self.jobs_idle,
@@ -230,18 +272,18 @@ class HQ:
 # LOCAL
     @toplevel_and_alive
     def stop_monitor(self):
-        self.pipe.send('stop_monitor')
+        self.pipe.send(('stop_monitor',))
         if self.pipe.recv() != 'stop_monitor':
             raise ValueError('response - query kind differs')
         self.thread_bck.join()
     @toplevel_and_alive
     def list_engines(self):
-        self.pipe.send('list_engines')
+        self.pipe.send(('list_engines',))
         if self.pipe.recv() != 'list_engines':
             raise ValueError('response - query kind differs')
     @toplevel_and_alive
     def start_sched(self):
-        self.pipe.send('start_scheduling')
+        self.pipe.send(('start_scheduling',))
         if self.pipe.recv() != 'start_scheduling':
             raise ValueError('response - query kind differs')
     @toplevel_and_alive
@@ -258,33 +300,41 @@ class HQ:
         print(pr)
     @toplevel_and_alive
     def stop_sched(self):
-        self.pipe.send('stop_scheduling')
+        self.pipe.send(('stop_scheduling',))
         if self.pipe.recv() != 'stop_scheduling':
             raise ValueError('response - query kind differs')
     @toplevel_and_alive
     def add_job(self, jobs):
         if isinstance(jobs, Jobs):
             for job in jobs.apart():
-                job.output_queue = self.manager.list()
                 self.jobs_idle[job.id] = job
         else: raise NotImplementedError('add_job only accepts \'Jobs\'')
     @toplevel_and_alive
     def status_report(self):
-        self.pipe.send('status_report')
+        self.pipe.send(('status_report',))
         if self.pipe.recv() != 'status_report':
             raise ValueError('response - query kind differs')
     @toplevel_and_alive
     def shutdown_all(self):
-        self.pipe.send('shutdown_all')
+        self.pipe.send(('shutdown_all',))
         if self.pipe.recv() != 'shutdown_all':
             raise ValueError('response - query kind differs')
     @toplevel_and_alive
     def follow_job(self, id):
-        if id in self.jobs_executing: 
-            pager.Pager(self.jobs_executing[id].output_queue).run()
-        elif id in self.jobs_finished:
-            pager.Pager(self.jobs_finished[id].output_queue).run()
-        else: print('job id not found')
+        with tempfile.TemporaryDirectory() as td:
+            fifo = td + '/pager.fifo'
+            os.mkfifo(fifo)
+            if id in self.jobs_executing or id in self.jobs_finished:
+                self.pipe.send(('follow', id, fifo))
+            else: print('job id not found')
+            r = open(fifo, 'rb')
+            if self.pipe.recv() != 'follow': raise ValueError('following job failed')
+            print('th1 before Pager')
+            pager.Pager(r).run()
+            if id in self.jobs_executing:
+                self.pipe.send(('unfollow', id))
+                if self.pipe.recv() != 'unfollow': raise ValueError('unfollowing job failed')
+            os.unlink(fifo)
 # END LOCAL
 ################################################################################
 
@@ -327,62 +377,3 @@ if __name__ == '__main__':
 #     'gpu09' : 1,
 #     'gpu10' : 1
 # }
-
-# import multiprocessing as m
-# import subprocess as s
-# import tempfile, os, time
-# def less():
-#     with tempfile.TemporaryDirectory() as td:
-#         fifo_name = td + '/less.fifo'
-#         os.mkfifo(fifo_name)
-#         def target():
-#             with open(fifo_name, 'wb') as w:
-#                 while True:
-#                     w.write((str(time.time()) + '\n').encode())
-#                     w.flush()
-#                     time.sleep(0.1)
-#         p = m.Process(target = target)
-#         p.start()
-#         os.system('unbuffer less -f %s' % fifo_name)
-#         os.unlink(fifo_name)
-#         p.terminate()
-#         p.join()
-
-
-# def app():
-#     def task():
-#         i = 0
-#         while i < 100:
-#             print(i)
-#             i += 1
-#             yield bluelet.null()
-#         yield bluelet.end(i)
-#     # def spawn():
-#     #     ret = yield bluelet.spawn(task())
-#     #     yield bluelet.end(ret)
-#     ret = yield bluelet.call(task())
-#     print('ret: %s' % ret)
-#     yield bluelet.end(ret)
-
-
-
-# class C:
-#     id = 1
-#     def __init__(self, lp):
-#         self.lp = lp
-     
-# import multiprocessing as man
-# m1 = man.Manager()
-# m2 = man.Manager()
-
-# dp = m1.dict()
-# lp = m1.list()
-
-# c = C(m2.list())
-
-# dp[0] = c
-# lp.append(c)
-
-# print(type(dp[0].lp))
-# print(type(lp[0].lp))
-        
