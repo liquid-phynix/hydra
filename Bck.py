@@ -1,3 +1,29 @@
+import bluelet, time
+#from multiprocessing import SimpleQueue
+
+bluelet.null = (lambda f: lambda: (time.sleep(0.005), (yield f())))(bluelet.null)
+
+class Msg:
+    def __init__(self, msg):
+        self.msg = msg
+class Ready(Msg): pass
+
+class Piper:
+    def __init__(self, q):
+        self.id = None
+        self.q = q
+        #        super(Piper, self).__init__()
+    def activate(self, id):
+        self.id = id
+    def deactivate(self):
+        self.id = None
+    def put(self,x):
+        self.q.put(x)
+    def get(self):
+        return self.q.get()
+    def empty(self):
+        return self.q.empty()
+    
 class Engine:
     def __init__(self, view_of_one, jobs_executing):
         if len(view_of_one) != 1:
@@ -16,28 +42,29 @@ class Engine:
         return self.view_of_one.apply_async(f, *args, **kwargs)
     def __repr__(self):
         return '<%s : %d>' % (self.hostname, self.id)
-    def start_job(self, job_id):
-        self.apply(BCK.start_job, self.jobs_executing[job_id].command)
+    def start_job(self, id):
+        self.apply(BCK.start_job, self.jobs_executing[id].command)
         while True:
             async = self.apply_async(BCK.remote_command, 'relay_stdout')
             while not async.ready():
                 yield bluelet.null()
             poll_code, stdout_line = async.result
-            job = self.jobs_executing[job_id]
-            job.output_queue.append(stdout_line.strip().decode())
-            self.jobs_executing[job_id] = job
-            if self.jobs_executing[job_id].follow and PIPE:
-                PIPE.write(stdout_line)
-                PIPE.flush()
+            line = stdout_line.strip().decode()
+            
+            job = self.jobs_executing[id]
+            job.output_queue.append(line)
+            self.jobs_executing[id] = job
+            if _pager_queue.id == id:
+                _pager_queue.put(line)
             if poll_code is not None:
-                job = self.jobs_executing[job_id]
+                job = self.jobs_executing[id]
                 job.unset_executing()
-                self.jobs_executing[job_id] = job
+                self.jobs_executing[id] = job
                 break
         yield bluelet.end()
 
 class BCK:
-    def __init__(self, pipe, profile, jobs_idle, jobs_executing, jobs_finished):
+    def __init__(self, pipe, profile, pager_queue, jobs_idle, jobs_executing, jobs_finished):
         from IPython.parallel import Client
         self.jobs_idle, self.jobs_executing, self.jobs_finished = jobs_idle, jobs_executing, jobs_finished
         self.pipe, self.profile = pipe, profile
@@ -46,9 +73,9 @@ class BCK:
         self.engines_executing = []
         self.run = True
         self.run_scheduling = False
-        global PIPE
-        PIPE = False
-
+        self.pager_queue = pager_queue
+        global _pager_queue
+        _pager_queue = self.pager_queue
     def app(self):
         print('client: %d engines, with id\'s %s are up' % (len(self.client.ids), self.client.ids))       
         for engine in self.engines_idle: print('id %d on %s' % (engine.id, engine.hostname))
@@ -113,34 +140,24 @@ class BCK:
         print('%d finished job(s)' % len(self.jobs_finished))
         print('%d idle job(s)' % len(self.jobs_idle))
         if ack: self.pipe.send('status_report')
-    def follow(self, id, fifo):
-        job = None
-        global PIPE
+    def follow(self, id):
         if id in self.jobs_executing:
-            job = self.jobs_executing[id]
-            PIPE = open(fifo, 'wb')
-            job.follow = True
-            self.jobs_executing[id] = job
+            while not self.pager_queue.empty():
+                self.pager_queue.get()
+            for line in self.jobs_executing[id].output_queue:
+                self.pager_queue.put(line)
+            self.pager_queue.activate(id)
             self.pipe.send('follow')
-        if id in self.jobs_finished:
-            #            job = self.jobs_finished[id]
-            #            print('job finished %s' % ('\-'.join(self.jobs_finished[id].output_queue)))
-            PIPE = open(fifo, 'wb')
-            self.pipe.send('follow')
+        elif id in self.jobs_finished:
+            while not self.pager_queue.empty():
+                self.pager_queue.get()
             for line in self.jobs_finished[id].output_queue:
-                print(line)
-                PIPE.write(line.encode() + b'\n')
-                PIPE.flush()
-            PIPE.close()
-                #        if job is None: raise ValueError('follow: \'job\' cannot be None')
+                self.pager_queue.put(line)
+            self.pipe.send('follow')
+        else: raise ValueError('follow: \'job\' cannot be None')
     def unfollow(self, id):
-        if id in self.jobs_executing:
-            job = self.jobs_executing[id]
-            job.follow = False
-            self.jobs_executing[id] = job
-            self.pipe.send('unfollow')
-        else: raise ValueError('unfollow: \'job\' cannot be None')
-        
+        self.pager_queue.deactivate()
+        self.pipe.send('unfollow')
 ################################################################################
 # REMOTE
     @staticmethod

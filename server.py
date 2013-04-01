@@ -1,13 +1,12 @@
 #!/usr/bin/python
 
 import bluelet, sys, time, itertools, functools, tempfile, os
-from multiprocessing import Process, Pipe, Manager
+from multiprocessing import Process, Pipe, Manager, SimpleQueue
 
-from Engine import Engine
 from Pager import Pager
 from Job import Jobs
 from Fmt import Fmt
-from Bck import BCK
+from Bck import BCK, Engine, Msg, Ready, Piper
 #from numpy import random
 
 # add_job(Jobs(Fmt('sleep %p').sub(p = map(str,random.random_integers(1,10,20).tolist()))));
@@ -27,52 +26,6 @@ def toplevel_and_alive(method):
     return method
 
 
-
-
-class Msg:
-    def __init__(self, msg):
-        self.msg = msg
-class Ready(Msg): pass
-
-from Bck import BCK
-class Engine:
-    def __init__(self, view_of_one, jobs_executing):
-        if len(view_of_one) != 1:
-            raise NotImplementedError('Engine takes a one element view')
-        self.view_of_one = view_of_one
-        self.id = view_of_one.targets
-        self.jobs_executing = jobs_executing
-        self.hostname = self.apply(BCK.remote_system_command, 'hostname')
-        def set_job_global():
-            global job
-            job = None
-        self.apply(set_job_global) # initialize global 'job'        
-    def apply(self, f, *args, **kwargs):
-        return self.view_of_one.apply_sync(f, *args, **kwargs)
-    def apply_async(self, f, *args, **kwargs):
-        return self.view_of_one.apply_async(f, *args, **kwargs)
-    def __repr__(self):
-        return '<%s : %d>' % (self.hostname, self.id)
-    def start_job(self, job_id):
-        self.apply(BCK.start_job, self.jobs_executing[job_id].command)
-        while True:
-            async = self.apply_async(BCK.remote_command, 'relay_stdout')
-            while not async.ready():
-                yield bluelet.null()
-            poll_code, stdout_line = async.result
-            job = self.jobs_executing[job_id]
-            job.output_queue.append(stdout_line.strip().decode())
-            self.jobs_executing[job_id] = job
-            if self.jobs_executing[job_id].follow and PIPE:
-                PIPE.write(stdout_line)
-                PIPE.flush()
-            if poll_code is not None:
-                job = self.jobs_executing[job_id]
-                job.unset_executing()
-                self.jobs_executing[job_id] = job
-                break
-        yield bluelet.end()
-
 class HQ:
     def __init__(self, profile):
         print('using profile: %s' % profile)
@@ -81,8 +34,11 @@ class HQ:
         self.jobs_idle = manager.dict()
         self.jobs_executing = manager.dict()
         self.jobs_finished = manager.dict()
+        q = SimpleQueue()
+        self.pager_queue = Piper(q)
         self.thread_bck = Process(target = lambda:
                                   BCK(pipe_bck, profile,
+                                      self.pager_queue,
                                       self.jobs_idle,
                                       self.jobs_executing,
                                       self.jobs_finished).bluelet())
@@ -146,25 +102,16 @@ class HQ:
             raise ValueError('response - query kind differs')
     @toplevel_and_alive
     def follow_job(self, id):
-        with tempfile.TemporaryDirectory() as td:
-            fifo = td + '/pager.fifo'
-            os.mkfifo(fifo)
-            # self.jobs_executing.update()
-            # self.jobs_finished.update()
-            # if id in self.jobs_executing:
-            #     print('job executing: %s' % ('\n'.join(self.jobs_executing[id].output_queue)))
-            # if id in self.jobs_finished:
-            #     print('job finished: %s' % ('\n'.join(self.jobs_finished[id].output_queue)))
-            if id in self.jobs_executing or id in self.jobs_finished:
-                self.pipe.send(('follow', id, fifo))
-            else: print('job id not found')
-            r = open(fifo, 'rb')
-            if self.pipe.recv() != 'follow': raise ValueError('following job failed')
-            pager.Pager(r).run()
-            if id in self.jobs_executing:
-                self.pipe.send(('unfollow', id))
-                if self.pipe.recv() != 'unfollow': raise ValueError('unfollowing job failed')
-            os.unlink(fifo)
+        if id in self.jobs_executing or id in self.jobs_finished:
+            self.pipe.send(('follow', id))
+        else:
+            print('job id not found')
+            return
+        if self.pipe.recv() != 'follow': raise ValueError('following job failed')
+        Pager(self.pager_queue).run()
+        if id in self.jobs_executing:
+            self.pipe.send(('unfollow', id))
+            if self.pipe.recv() != 'unfollow': raise ValueError('unfollowing job failed')
 # END LOCAL
 ################################################################################
 
