@@ -94,19 +94,15 @@ class Engine:
                 yield bluelet.null()
             poll_code, stdout_line = async.result
             job = self.jobs_executing[job_id]
-            #            print('engine: follow: %s, line received: %s' % (self.jobs_executing[job_id].follow, stdout_line))
             job.output_queue.append(stdout_line.strip().decode())
-            #            print('from job: %s' % '>\n<'.join(self.executing_job.output_queue))
-            if job.follow and PIPE is not None:
+            self.jobs_executing[job_id] = job
+            if self.jobs_executing[job_id].follow and PIPE:
                 PIPE.write(stdout_line)
                 PIPE.flush()
-                #                os.write(job.follow, b'adfaidohfusfhgdsaiuyhgfsduiyfs\n')
-                #                with open(job.follow, 'wb') as fd:
-                #                job.follow.write(stdout_line)
-                #                fd.flush()
-                #                print('written %s' % stdout_line)
             if poll_code is not None:
+                job = self.jobs_executing[job_id]
                 job.unset_executing()
+                self.jobs_executing[job_id] = job
                 break
         yield bluelet.end()
 
@@ -151,9 +147,12 @@ class BCK:
         self.engines_executing.append(unlucky)
         _,lucky = self.jobs_idle.popitem()
         self.jobs_executing[lucky.id] = lucky
-        yield bluelet.call(unlucky.start_job(lucky.id))        
+        yield bluelet.call(unlucky.start_job(lucky.id))
+
+        #        print('job finished: %s' % ('\n'.join(self.jobs_executing[lucky.id].output_queue)))
+        self.jobs_finished[lucky.id] = self.jobs_executing[lucky.id]
+        #        print('job finished: %s' % ('\n'.join(self.jobs_finished[lucky.id].output_queue)))
         del self.jobs_executing[lucky.id]
-        self.jobs_finished[lucky.id] = lucky
         unlucky.executing_job = None
         self.engines_executing.remove(unlucky)
         self.engines_idle.append(unlucky)
@@ -191,26 +190,24 @@ class BCK:
         if ack: self.pipe.send('status_report')
     def follow(self, id, fifo):
         job = None
+        global PIPE
         if id in self.jobs_executing:
             job = self.jobs_executing[id]
-            global PIPE
             PIPE = open(fifo, 'wb')
             job.follow = True
             self.jobs_executing[id] = job
             self.pipe.send('follow')
         if id in self.jobs_finished:
-            job = self.jobs_finished[id]
-            print('job finished %s' % ('\-'.join(self.jobs_finished[id].output_queue)))
-            global PIPE
+            #            job = self.jobs_finished[id]
+            #            print('job finished %s' % ('\-'.join(self.jobs_finished[id].output_queue)))
             PIPE = open(fifo, 'wb')
             self.pipe.send('follow')
-            for line in job.output_queue:
+            for line in self.jobs_finished[id].output_queue:
                 print(line)
-                PIPE.write(line + b'\n')
-            PIPE.flush()
-            #            PIPE.close()
-            print('content passed')
-        if job is None: raise ValueError('follow: \'job\' cannot be None')
+                PIPE.write(line.encode() + b'\n')
+                PIPE.flush()
+            PIPE.close()
+                #        if job is None: raise ValueError('follow: \'job\' cannot be None')
     def unfollow(self, id):
         if id in self.jobs_executing:
             job = self.jobs_executing[id]
@@ -324,12 +321,17 @@ class HQ:
         with tempfile.TemporaryDirectory() as td:
             fifo = td + '/pager.fifo'
             os.mkfifo(fifo)
+            # self.jobs_executing.update()
+            # self.jobs_finished.update()
+            # if id in self.jobs_executing:
+            #     print('job executing: %s' % ('\n'.join(self.jobs_executing[id].output_queue)))
+            # if id in self.jobs_finished:
+            #     print('job finished: %s' % ('\n'.join(self.jobs_finished[id].output_queue)))
             if id in self.jobs_executing or id in self.jobs_finished:
                 self.pipe.send(('follow', id, fifo))
             else: print('job id not found')
             r = open(fifo, 'rb')
             if self.pipe.recv() != 'follow': raise ValueError('following job failed')
-            print('th1 before Pager')
             pager.Pager(r).run()
             if id in self.jobs_executing:
                 self.pipe.send(('unfollow', id))

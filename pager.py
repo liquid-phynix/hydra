@@ -26,24 +26,18 @@ class Walker(urwid.ListWalker):
 
 class Pager(urwid.MainLoop):
     def __init__(self, r):
-        print('trying in Pager')
         self.r = r
-        print('opened in Pager')
         self.lines = [] #[line.strip().decode() for line in self.r.readlines()]
-        print('after read')
         self.listbox = urwid.ListBox(Walker(self.lines))
         self.footer = urwid.AttrMap(urwid.Text(footer_text), 'foot')
         self.view = urwid.Frame(urwid.AttrWrap(self.listbox, 'body'), footer = self.footer)
         super(Pager, self).__init__(self.view, palette,
                                     unhandled_input = self.input_handler,
                                     handle_mouse = True)
-        #        self.watch_file(self.read, self.update_from_fifo)
         self.watch_file(r, self.update_from_fifo)
     def update_from_fifo(self):
-        #        print('update')
-        line = self.r.readline()
-        self.lines.append(line.strip())
-        self.draw_screen()
+        self.lines.append(self.r.readline().strip())
+        #        self.draw_screen()
     def input_handler(self, input):
         if input in ('q', 'Q'):
             raise urwid.ExitMainLoop()
