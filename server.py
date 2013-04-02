@@ -11,7 +11,8 @@ from Bck import BCK, Engine, Msg, Ready, Piper
 
 # add_job(Jobs(Fmt('sleep %p').sub(p = map(str,random.random_integers(1,10,20).tolist()))));
 
-bluelet.null = (lambda f: lambda: (time.sleep(0.005), (yield f())))(bluelet.null)
+#bluelet.null = (lambda f: lambda: (time.sleep(0.01), (yield f())))(bluelet.null)
+bluelet.null = lambda: bluelet.sleep(0.1)
 
 usage = \
 """usage: %s --profile=<profile>

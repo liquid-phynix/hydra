@@ -1,7 +1,8 @@
 import bluelet, time
 #from multiprocessing import SimpleQueue
 
-bluelet.null = (lambda f: lambda: (time.sleep(0.005), (yield f())))(bluelet.null)
+#bluelet.null = (lambda f: lambda: (time.sleep(0.01), (yield f())))(bluelet.null)
+bluelet.null = lambda: bluelet.sleep(0.1)
 
 class Msg:
     def __init__(self, msg):
