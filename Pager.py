@@ -33,14 +33,6 @@ class Pager(urwid.MainLoop):
             changed = True
         if changed and self.mode == 'Follow': 
             self.listbox.focus_position = len(self.lw) - 1
-            #            self.listbox.set_focus_valign('bottom')
-            pass
-            # _, pos = self.lw.get_focus()
-            #            self.lw.set_focus(pos + 1)
-            #            self.listbox.set_focus(self.lw.focus)
-
-        # if changed and mode == 'Follow':
-        #     self.lw.set_focus(len(self.lw) - 1)
         self.set_alarm_in(0.05, self.callback)
     def input_handler(self, input):
         if input in ('q', 'Q'):
@@ -48,19 +40,12 @@ class Pager(urwid.MainLoop):
         elif input in ('f', 'F'):
             if self.mode != 'Follow':
                 self.mode = 'Follow'
-                #                self.lw.set_focus(len(self.lw) - 1 - 1 - 100)
-                #                self.footer_text_text.set_text(footer_text(self.mode + ' ' +str(len(self.lw))))
-                #                w,p = self.listbox.get_focus()
                 self.footer_text_text.set_text(footer_text(self.mode))
-                #                self.listbox.set_focus_valign('top')
         else:
-            #            _, pos = self.lw.get_focus()
-            #            o,i = self.lw.get_focus_offset_inset()
-            #            o,i = self.listbox.get_focus_offset_inset()
-            #            self.lw.set_focus(pos - 2)
             self.mode = 'Static' 
-            self.footer_text_text.set_text(footer_text(self.mode)) # + ' ' + str(o) + ' ' + str(i)))
-            #            self.listbox.set_focus_valign('top')
+            self.footer_text_text.set_text(footer_text(self.mode))
+            self.listbox.focus_position = len(self.lw) - 1 - self.listbox.offset_rows
+
 
 
 # class Walker(urwid.SimpleFocusListWalker):
