@@ -1,11 +1,11 @@
-#!/usr/bin/python
+#!/bin/env python3
 
 import bluelet, sys, time, itertools, functools, tempfile, os
 from multiprocessing import Process, Pipe, Manager, SimpleQueue
 
 from Pager import Pager
 from Job import Jobs
-from Fmt import Fmt
+from Fmt import Args, expand_jobs
 from Bck import BCK, Engine, Msg, Ready, Piper
 #from numpy import random
 
@@ -113,6 +113,14 @@ class HQ:
         if id in self.jobs_executing:
             self.pipe.send(('unfollow', id))
             if self.pipe.recv() != 'unfollow': raise ValueError('unfollowing job failed')
+    @toplevel_and_alive
+    def remove_job(self, id):
+        if id in self.jobs_executing:
+            self.pipe.send(('remove', id))
+        else:
+            print('job id not found')
+            return
+        if self.pipe.recv() != 'remove': raise ValueError('removing job failed')
 # END LOCAL
 ################################################################################
 
@@ -138,6 +146,9 @@ if __name__ == '__main__':
     ipshell()
     if _hq.thread_bck.is_alive(): stop_monitor()
     sys.exit(0)
+
+# add_job(Jobs(expand_jobs("/home/mcstar/src/hydra/lilscript.sh {iters}", Args(1)(iters=[100,110,120])),working_dir='/home/mcstar/src/hydra/',unique_dir='dir'))
+# %(GPUID)d
 
 # ipcluster start --profile=ssh
 # > ipcluster_config.py

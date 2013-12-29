@@ -3,9 +3,13 @@ class Job:
     id = 1 # instance counter for comparison purposes
     def __eq__(self, other):
         return self.id == other.id
-    def __init__(self, command, working_dir = '.', unique_dir = False):
+    def __init__(self, tpl, working_dir = '.', unique_dir = None):
+        command, params = tpl
+        self.engine_id = None
         self.id, Job.id = Job.id, Job.id + 1
-        self.command, self.working_dir, self.unique_dir = command, working_dir, unique_dir
+        self.command, self.working_dir, self.unique_dir, self.params = command, working_dir, unique_dir, params
+        if unique_dir:
+            self.unique_dir = unique_dir.format(**params)
         self.is_executing = False
         self.output_queue = []
         self.follow = False
@@ -19,10 +23,7 @@ class Job:
 
 class Jobs:
     """represents multiple jobs with common properties"""
-    def __init__(self, jobs, working_dir = '.', unique_dir = False):
-        """example use:
-        Jobs('/path/to/executable p1 p2', working_dir = ...)
-        Jobs(Fmt(...), working_dir = ...)"""
+    def __init__(self, jobs, working_dir = '.', unique_dir = None):
         if not isinstance(jobs, list): jobs = [jobs]
         self.jobs, self.working_dir, self.unique_dir = jobs, working_dir, unique_dir
     def apart(self):

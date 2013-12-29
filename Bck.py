@@ -24,6 +24,14 @@ class Piper:
         return self.q.get()
     def empty(self):
         return self.q.empty()
+
+def assign_gpuid_to_engines(es):
+    hostnames = [e.hostname.strip().split('.')[0] for e in es]
+    from collections import defaultdict
+    d = defaultdict(int)
+    for hn, e in zip(hostnames, es):
+        e.gpuid = d[hn]
+        d[hn] += 1
     
 class Engine:
     def __init__(self, view_of_one, jobs_executing):
@@ -44,7 +52,11 @@ class Engine:
     def __repr__(self):
         return '<%s : %d>' % (self.hostname, self.id)
     def start_job(self, id):
-        self.apply(BCK.start_job, self.jobs_executing[id].command)
+        job = self.jobs_executing[id]
+        self.apply(BCK.start_job,
+                   job.command % {'GPUID' : self.gpuid},
+                   job.working_dir,
+                   job.unique_dir)
         while True:
             async = self.apply_async(BCK.remote_command, 'relay_stdout')
             while not async.ready():
@@ -71,6 +83,9 @@ class BCK:
         self.pipe, self.profile = pipe, profile
         self.client = Client(profile = profile)
         self.engines_idle = [Engine(self.client[id], jobs_executing) for id in self.client.ids]
+        
+        assign_gpuid_to_engines(self.engines_idle)
+
         self.engines_executing = []
         self.run = True
         self.run_scheduling = False
@@ -99,6 +114,7 @@ class BCK:
         unlucky = self.engines_idle.pop()
         self.engines_executing.append(unlucky)
         _,lucky = self.jobs_idle.popitem()
+        lucky.engine_id = unlucky.id # assignment must happen before reinsertion
         self.jobs_executing[lucky.id] = lucky
         yield bluelet.call(unlucky.start_job(lucky.id))
 
@@ -159,12 +175,30 @@ class BCK:
     def unfollow(self, id):
         self.pager_queue.deactivate()
         self.pipe.send('unfollow')
+    def remove(self, id):
+        if id in self.jobs_executing:
+            job = self.jobs_executing[id]
+            for engine in self.engines_executing:
+                if job.engine_id == engine.id:
+                    engine.apply(BCK.remote_command, 'stop_process')
+                    break
+        self.pipe.send('remove')
 ################################################################################
 # REMOTE
     @staticmethod
-    def start_job(command):
+    def start_job(command, wdir, udir):
         from subprocess import Popen, PIPE
+        import os
         global job
+        os.chdir(wdir)
+        if udir:
+            try:
+                os.mkdir(udir)
+            except OSError:
+                pass
+            os.chdir(udir)
+        print('pwd:')
+        os.getcwd()
         job = Popen(command.split(' '), stdout = PIPE)
     @staticmethod
     def remote_command(command):
