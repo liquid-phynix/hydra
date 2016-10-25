@@ -12,7 +12,7 @@ from Bck import BCK, Engine, Msg, Ready, Piper
 # add_job(Jobs(Fmt('sleep %p').sub(p = map(str,random.random_integers(1,10,20).tolist()))));
 
 #bluelet.null = (lambda f: lambda: (time.sleep(0.01), (yield f())))(bluelet.null)
-bluelet.null = lambda: bluelet.sleep(0.1)
+bluelet.null = lambda: bluelet.sleep(0.02)
 
 usage = \
 """usage: %s --profile=<profile>
@@ -88,9 +88,13 @@ class HQ:
     @toplevel_and_alive
     def add_job(self, jobs):
         if isinstance(jobs, Jobs):
-            for job in jobs.apart():
-                self.jobs_idle[job.id] = job
+            _jobs = jobs.apart()
+        elif isinstance(jobs, list):
+            _jobs = jobs
         else: raise NotImplementedError('add_job only accepts \'Jobs\'')
+        for job in _jobs:
+            self.jobs_idle[job.id] = job
+
     @toplevel_and_alive
     def status_report(self):
         self.pipe.send(('status_report',))

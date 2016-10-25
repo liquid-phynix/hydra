@@ -199,7 +199,9 @@ class BCK:
             os.chdir(udir)
         print('pwd:')
         os.getcwd()
-        job = Popen(command.split(' '), stdout = PIPE)
+        #job = Popen(command.split(' '), shell = True, stdout = PIPE)
+        # driver scripten keresztul lehet csak futtatni igy      
+        job = Popen(command, shell = True, stdout = PIPE)
     @staticmethod
     def remote_command(command):
         global job
